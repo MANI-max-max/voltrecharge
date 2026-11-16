@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { ArrowRight, ExternalLink, MessageCircle, ShieldCheck, X } from 'lucide-react';
+import { ArrowRight, Check, Copy, ExternalLink, MessageCircle, ShieldCheck, X } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { buildWhatsAppSupportUrl } from '../lib/api';
+import { firebaseProjectId } from '../lib/firebase';
 import { PWAInstallButton } from './PWAInstallButton';
 
 interface AuthScreenProps {
@@ -34,6 +35,8 @@ export function AuthScreen({
   const [password, setPassword] = useState('');
   const [referralCode, setReferralCode] = useState(pendingReferralCode);
   const [error, setError] = useState<string | null>(null);
+  const [unauthorizedDomain, setUnauthorizedDomain] = useState<string | null>(null);
+  const [copiedDomain, setCopiedDomain] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   const brandName = bootstrap.settings.brand_name || 'VoltPay';
@@ -47,6 +50,7 @@ export function AuthScreen({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+    setUnauthorizedDomain(null);
     setSubmitting(true);
     try {
       if (mode === 'login') {
@@ -69,13 +73,39 @@ export function AuthScreen({
 
   const handleGoogleSignIn = async () => {
     setError(null);
+    setUnauthorizedDomain(null);
     setSubmitting(true);
     try {
       await signInWithGoogle(referralCode.trim() || undefined);
     } catch (err: any) {
-      setError(err.message || 'Google sign-in could not be completed.');
+      const code = err?.code || '';
+      const msg = String(err?.message || '');
+      if (code === 'auth/unauthorized-domain' || msg.includes('auth/unauthorized-domain')) {
+        const hostname = typeof window !== 'undefined' ? window.location.hostname : '';
+        setUnauthorizedDomain(hostname || 'this domain');
+        setError(
+          `Google Sign-In requires "${hostname}" to be added to Firebase Authorized Domains, or you can sign in with Email & Password below.`
+        );
+      } else if (code === 'auth/popup-blocked') {
+        setError('Sign-in popup was blocked by your browser. Please allow popups or use Email & Password below.');
+      } else if (code === 'auth/popup-closed-by-user') {
+        setError('Google sign-in window was closed before completing.');
+      } else {
+        setError(msg || 'Google sign-in could not be completed.');
+      }
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleCopyDomain = async () => {
+    if (!unauthorizedDomain) return;
+    try {
+      await navigator.clipboard.writeText(unauthorizedDomain);
+      setCopiedDomain(true);
+      setTimeout(() => setCopiedDomain(false), 2000);
+    } catch {
+      // ignore clipboard restrictions
     }
   };
 
@@ -141,8 +171,43 @@ export function AuthScreen({
       </div>
 
             {error && (
-              <div className="mb-4 p-3 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700">
-                {error}
+              <div className="mb-4 p-3.5 rounded-lg bg-red-50 border border-red-200 text-xs sm:text-sm text-red-800 space-y-2.5">
+                <p className="font-medium leading-relaxed">{error}</p>
+                {unauthorizedDomain && (
+                  <div className="pt-2 border-t border-red-200 space-y-2">
+                    <div className="flex items-center justify-between gap-2 bg-white border border-red-200 rounded-md px-2.5 py-1.5">
+                      <span className="font-mono text-xs text-slate-800 truncate">
+                        {unauthorizedDomain}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={handleCopyDomain}
+                        className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-semibold text-blue-700 hover:bg-blue-50 rounded cursor-pointer shrink-0"
+                      >
+                        {copiedDomain ? (
+                          <>
+                            <Check className="w-3 h-3 text-emerald-600" />
+                            <span>Copied</span>
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="w-3 h-3" />
+                            <span>Copy Domain</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                    <a
+                      href={`https://console.firebase.google.com/project/${firebaseProjectId}/authentication/settings`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1.5 text-xs font-semibold text-blue-700 hover:underline"
+                    >
+                      <span>Open Firebase Authorized Domains Settings</span>
+                      <ExternalLink className="w-3.5 h-3.5" />
+                    </a>
+                  </div>
+                )}
               </div>
             )}
 

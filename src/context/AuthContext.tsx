@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { onAuthStateChanged, signInWithPopup, signOut as firebaseSignOut } from 'firebase/auth';
 import { apiRequest } from '../lib/api';
 import { auth, googleAuthProvider } from '../lib/firebase';
@@ -10,6 +10,8 @@ import {
   ServiceItem,
   UserProfile,
 } from '../types';
+
+const LOCAL_TOKEN_KEY = 'voltpay_session_token';
 
 interface BootstrapData {
   services: ServiceItem[];
@@ -45,11 +47,18 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<UserProfile | null>(null);
-  const [token, setToken] = useState<string | null>(null);
+  const [token, setToken] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem(LOCAL_TOKEN_KEY);
+    } catch {
+      return null;
+    }
+  });
   const [loading, setLoading] = useState(true);
   const [kyc, setKyc] = useState<KycSubmission | null>(null);
   const [referrals, setReferrals] = useState<ReferralItem[]>([]);
   const [pendingReferralCode, setPendingReferralCode] = useState('');
+  const pendingReferralRef = useRef('');
   const [bootstrap, setBootstrap] = useState<BootstrapData>({
     services: [],
     offers: [],
@@ -73,7 +82,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const params = new URLSearchParams(window.location.search);
     const ref = params.get('ref');
     if (ref) {
-      setPendingReferralCode(ref.trim().toUpperCase());
+      const normalized = ref.trim().toUpperCase();
+      setPendingReferralCode(normalized);
+      pendingReferralRef.current = normalized;
     }
   }, []);
 
@@ -120,24 +131,65 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     refreshBootstrap();
+  }, [refreshBootstrap]);
+
+  useEffect(() => {
+    let active = true;
+
+    const savedLocalToken = (() => {
+      try {
+        return localStorage.getItem(LOCAL_TOKEN_KEY);
+      } catch {
+        return null;
+      }
+    })();
+
+    if (savedLocalToken && savedLocalToken.startsWith('VP1.')) {
+      fetchMeWithToken(savedLocalToken)
+        .then(() => {
+          if (active) setToken(savedLocalToken);
+        })
+        .catch(() => {
+          try {
+            localStorage.removeItem(LOCAL_TOKEN_KEY);
+          } catch {
+            // ignore storage errors
+          }
+          if (active) setToken(null);
+        })
+        .finally(() => {
+          if (active) setLoading(false);
+        });
+    }
+
     const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
       if (fbUser) {
         try {
           const idToken = await fbUser.getIdToken();
+          if (!active) return;
           setToken(idToken);
-          await fetchMeWithToken(idToken, pendingReferralCode || undefined);
+          await fetchMeWithToken(idToken, pendingReferralRef.current || undefined);
         } catch (error) {
           console.error('Failed to sync Firebase user:', error);
         }
       }
-      setLoading(false);
+      if (active) setLoading(false);
     });
-    return () => unsubscribe();
-  }, [refreshBootstrap, fetchMeWithToken, pendingReferralCode]);
+
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, [fetchMeWithToken]);
 
   const signInWithGoogle = async (referralCode?: string) => {
     const cred = await signInWithPopup(auth, googleAuthProvider);
     const idToken = await cred.user.getIdToken();
+    try {
+      localStorage.removeItem(LOCAL_TOKEN_KEY);
+    } catch {
+      // ignore storage errors
+    }
     setToken(idToken);
     await fetchMeWithToken(idToken, referralCode || pendingReferralCode || undefined);
   };
@@ -147,6 +199,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       method: 'POST',
       body: { email, password },
     });
+    try {
+      localStorage.setItem(LOCAL_TOKEN_KEY, res.token);
+    } catch {
+      // ignore storage errors
+    }
     setToken(res.token);
     setUser(res.user);
     await fetchMeWithToken(res.token);
@@ -166,12 +223,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         referralCode: input.referralCode || pendingReferralCode || undefined,
       },
     });
+    try {
+      localStorage.setItem(LOCAL_TOKEN_KEY, res.token);
+    } catch {
+      // ignore storage errors
+    }
     setToken(res.token);
     setUser(res.user);
     await fetchMeWithToken(res.token);
   };
 
   const signOut = async () => {
+    try {
+      localStorage.removeItem(LOCAL_TOKEN_KEY);
+    } catch {
+      // ignore storage errors
+    }
     if (auth.currentUser) {
       await firebaseSignOut(auth);
     }

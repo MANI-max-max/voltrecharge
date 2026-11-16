@@ -1,0 +1,6 @@
+{
+  "name": "VoltPay Recharge & Bill Hub",
+  "description": "Full-stack multi-utility recharge, bill payment, commission, cashback, KYC, referral, and admin management platform.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
